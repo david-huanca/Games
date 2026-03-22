@@ -234,6 +234,82 @@
     }
     #score-bar span { background: rgba(255,255,255,.25); padding: 4px 14px; border-radius: 20px; }
 
+    /* ── Mode selector ── */
+    #mode-selector {
+      z-index: 1;
+      display: flex;
+      gap: 10px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .mode-btn {
+      font-family: 'Fredoka One', cursive;
+      font-size: .95rem;
+      padding: 8px 20px;
+      border: 3px solid transparent;
+      border-radius: 50px;
+      cursor: pointer;
+      box-shadow: 0 4px 10px rgba(0,0,0,.2);
+      transition: transform .15s, box-shadow .15s, border-color .15s;
+      background: rgba(255,255,255,.85);
+      color: #444;
+    }
+    .mode-btn.active { border-color: #ff6b6b; background: #fff; transform: scale(1.06); }
+    .mode-btn:hover  { transform: translateY(-2px); box-shadow: 0 6px 14px rgba(0,0,0,.25); }
+
+    /* ── Difficulty selector ── */
+    #diff-selector {
+      z-index: 1;
+      display: none;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    #diff-selector.show { display: flex; }
+    .diff-btn {
+      font-family: 'Fredoka One', cursive;
+      font-size: .85rem;
+      padding: 6px 16px;
+      border: 3px solid transparent;
+      border-radius: 50px;
+      cursor: pointer;
+      box-shadow: 0 3px 8px rgba(0,0,0,.15);
+      transition: transform .15s, border-color .15s;
+    }
+    .diff-btn:hover  { transform: translateY(-2px); }
+    .diff-btn.active { border-color: #2d2d2d; transform: scale(1.06); }
+    #diff-easy   { background: #55efc4; color: #1a6b4a; }
+    #diff-normal { background: #fdcb6e; color: #7a5c00; }
+    #diff-hard   { background: #ff7675; color: #fff; }
+
+    /* ── Thinking indicator ── */
+    #thinking-bar {
+      z-index: 1;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: rgba(45,45,45,.85);
+      color: #fff;
+      border-radius: 50px;
+      padding: 6px 20px;
+      font-size: .9rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    #thinking-bar.show { display: flex; }
+    .dot-pulse { display: flex; gap: 4px; }
+    .dot-pulse span {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #4ecdc4;
+      animation: pulse .9s ease-in-out infinite;
+    }
+    .dot-pulse span:nth-child(2) { animation-delay: .2s; }
+    .dot-pulse span:nth-child(3) { animation-delay: .4s; }
+    @keyframes pulse { 0%,100%{transform:scale(.7);opacity:.5} 50%{transform:scale(1.2);opacity:1} }
+
     /* ── Buttons ── */
     .btn-row {
       z-index: 1;
@@ -334,6 +410,25 @@
 
 <h1>♟️ Ajedrez para Niños ♟️</h1>
 
+<!-- Mode selector -->
+<div id="mode-selector">
+  <button class="mode-btn active" id="btn-mode-2p">👥 2 Jugadores</button>
+  <button class="mode-btn" id="btn-mode-cpu">🤖 vs Computadora</button>
+</div>
+
+<!-- Difficulty selector (shown when vs CPU) -->
+<div id="diff-selector">
+  <button class="diff-btn active" id="diff-easy">😊 Fácil</button>
+  <button class="diff-btn" id="diff-normal">😐 Normal</button>
+  <button class="diff-btn" id="diff-hard">😈 Difícil</button>
+</div>
+
+<!-- Thinking bar -->
+<div id="thinking-bar">
+  <span>🤖 Computadora pensando</span>
+  <div class="dot-pulse"><span></span><span></span><span></span></div>
+</div>
+
 <div id="turn-banner" class="white-turn">
   <div class="dot"></div>
   <span id="turn-text">Turno de las Blancas</span>
@@ -420,6 +515,202 @@ let scores = {w:0, b:0};
 let enPassantTarget = null;  // [row, col] or null
 let castlingRights = { wK:true, wQ:true, bK:true, bQ:true };
 let pendingPromo = null;
+
+// AI state
+let vsComputer = false;
+let aiDepth = 1;  // 1=easy, 2=normal, 3=hard
+let aiThinking = false;
+
+/* ============================================================
+   PIECE-SQUARE TABLES (black perspective – index 0 = rank 8)
+   Values in centipawns. White mirrors vertically.
+   ============================================================ */
+const PST = {
+  P: [
+    [ 0,  0,  0,  0,  0,  0,  0,  0],
+    [50, 50, 50, 50, 50, 50, 50, 50],
+    [10, 10, 20, 30, 30, 20, 10, 10],
+    [ 5,  5, 10, 25, 25, 10,  5,  5],
+    [ 0,  0,  0, 20, 20,  0,  0,  0],
+    [ 5, -5,-10,  0,  0,-10, -5,  5],
+    [ 5, 10, 10,-20,-20, 10, 10,  5],
+    [ 0,  0,  0,  0,  0,  0,  0,  0],
+  ],
+  N: [
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+    [-40,-20,  0,  0,  0,  0,-20,-40],
+    [-30,  0, 10, 15, 15, 10,  0,-30],
+    [-30,  5, 15, 20, 20, 15,  5,-30],
+    [-30,  0, 15, 20, 20, 15,  0,-30],
+    [-30,  5, 10, 15, 15, 10,  5,-30],
+    [-40,-20,  0,  5,  5,  0,-20,-40],
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+  ],
+  B: [
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5, 10, 10,  5,  0,-10],
+    [-10,  5,  5, 10, 10,  5,  5,-10],
+    [-10,  0, 10, 10, 10, 10,  0,-10],
+    [-10, 10, 10, 10, 10, 10, 10,-10],
+    [-10,  5,  0,  0,  0,  0,  5,-10],
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+  ],
+  R: [
+    [ 0,  0,  0,  0,  0,  0,  0,  0],
+    [ 5, 10, 10, 10, 10, 10, 10,  5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [ 0,  0,  0,  5,  5,  0,  0,  0],
+  ],
+  Q: [
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5,  5,  5,  5,  0,-10],
+    [ -5,  0,  5,  5,  5,  5,  0, -5],
+    [  0,  0,  5,  5,  5,  5,  0, -5],
+    [-10,  5,  5,  5,  5,  5,  0,-10],
+    [-10,  0,  5,  0,  0,  0,  0,-10],
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+  ],
+  K: [
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-20,-30,-30,-40,-40,-30,-30,-20],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [ 20, 20,  0,  0,  0,  0, 20, 20],
+    [ 20, 30, 10,  0,  0, 10, 30, 20],
+  ],
+};
+
+function pstScore(p, row, col){
+  const t = type(p);
+  const table = PST[t];
+  if(!table) return 0;
+  // White uses mirrored rows (row 7 = rank 1 for white)
+  const r = isWhite(p) ? 7 - row : row;
+  return table[r][col];
+}
+
+// ── Static board evaluation (positive = good for black/AI) ──
+function evaluate(b){
+  let score = 0;
+  for(let r=0;r<8;r++) for(let f=0;f<8;f++){
+    const p = b[r][f];
+    if(!p) continue;
+    const val = (PIECE_VALUES[type(p)] || 0) * 100 + pstScore(p, r, f);
+    score += isBlack(p) ? val : -val;
+  }
+  return score;
+}
+
+// ── Get all legal moves for a color ───────────────────────
+function allLegalMoves(b, c, epTarget, castRights){
+  const moves = [];
+  for(let r=0;r<8;r++) for(let f=0;f<8;f++){
+    if(color(b[r][f])!==c) continue;
+    const legal = legalMoves(b, r, f, epTarget, castRights);
+    legal.forEach(([tr,tf])=>moves.push([r,f,tr,tf]));
+  }
+  return moves;
+}
+
+// ── Apply a move to a cloned board; returns new ep & cast ──
+function applyMove(b, fr, fc, tr, tc, epTarget, castRights){
+  const nb  = cloneBoard(b);
+  const p   = nb[fr][fc];
+  const t   = type(p);
+  const c   = color(p);
+  const newCast = {...castRights};
+  let newEp = null;
+
+  // En passant capture
+  if(t==='P' && epTarget && tr===epTarget[0] && tc===epTarget[1])
+    nb[fr][tc] = null;
+
+  // Castling rook
+  if(t==='K'){
+    const kRow = c==='w'?7:0;
+    if(fc===4 && tc===6){ nb[kRow][5]=c+'R'; nb[kRow][7]=null; }
+    if(fc===4 && tc===2){ nb[kRow][3]=c+'R'; nb[kRow][0]=null; }
+    newCast[c+'K'] = false; newCast[c+'Q'] = false;
+  }
+  if(t==='R'){
+    if(fc===0) newCast[c+'Q'] = false;
+    if(fc===7) newCast[c+'K'] = false;
+  }
+
+  nb[tr][tc] = p;
+  nb[fr][fc] = null;
+
+  // Pawn promotion: auto-queen for AI
+  if(t==='P' && (tr===0 || tr===7)) nb[tr][tc] = c+'Q';
+
+  // En passant target
+  if(t==='P' && Math.abs(tr-fr)===2) newEp = [(fr+tr)/2, fc];
+
+  return { board: nb, ep: newEp, cast: newCast };
+}
+
+// ── Minimax with alpha-beta ────────────────────────────────
+function minimax(b, depth, alpha, beta, maximizing, epTarget, castRights){
+  if(depth === 0) return { score: evaluate(b) };
+
+  const c = maximizing ? 'b' : 'w';
+  const moves = allLegalMoves(b, c, epTarget, castRights);
+
+  if(moves.length === 0){
+    if(inCheck(b, c)) return { score: maximizing ? -100000 : 100000 };
+    return { score: 0 }; // stalemate
+  }
+
+  let best = null;
+
+  if(maximizing){
+    let bestScore = -Infinity;
+    for(const [fr,fc,tr,tc] of moves){
+      const { board:nb, ep:newEp, cast:newCast } = applyMove(b, fr, fc, tr, tc, epTarget, castRights);
+      const { score } = minimax(nb, depth-1, alpha, beta, false, newEp, newCast);
+      if(score > bestScore){ bestScore = score; best = [fr,fc,tr,tc]; }
+      alpha = Math.max(alpha, score);
+      if(beta <= alpha) break;
+    }
+    return { score: bestScore, move: best };
+  } else {
+    let bestScore = Infinity;
+    for(const [fr,fc,tr,tc] of moves){
+      const { board:nb, ep:newEp, cast:newCast } = applyMove(b, fr, fc, tr, tc, epTarget, castRights);
+      const { score } = minimax(nb, depth-1, alpha, beta, true, newEp, newCast);
+      if(score < bestScore){ bestScore = score; best = [fr,fc,tr,tc]; }
+      beta = Math.min(beta, score);
+      if(beta <= alpha) break;
+    }
+    return { score: bestScore, move: best };
+  }
+}
+
+// ── Trigger AI move ───────────────────────────────────────
+function scheduleAIMove(){
+  if(!vsComputer || turn!=='b' || pendingPromo || aiThinking) return;
+  aiThinking = true;
+  document.getElementById('thinking-bar').classList.add('show');
+  // Use setTimeout to allow UI to update first
+  setTimeout(()=>{
+    const { move } = minimax(board, aiDepth, -Infinity, Infinity, true, enPassantTarget, castlingRights);
+    document.getElementById('thinking-bar').classList.remove('show');
+    aiThinking = false;
+    if(move){
+      const [fr,fc,tr,tc] = move;
+      selected = null; validMoves = [];
+      doMove(fr, fc, tr, tc);
+    }
+  }, 50);
+}
 
 // ── Init decorative stars ──────────────────────────────────
 (function initStars(){
@@ -647,7 +938,7 @@ function render(){
     turnTxt.textContent = 'Turno de las Blancas ♔';
   } else {
     banner.className = 'black-turn';
-    turnTxt.textContent = 'Turno de las Negras ♚';
+    turnTxt.textContent = vsComputer ? '🤖 Computadora (Negras) ♚' : 'Turno de las Negras ♚';
   }
 
   // Captured pieces
@@ -664,6 +955,7 @@ function render(){
 // ── Handle square click ───────────────────────────────────
 function onSquareClick(e){
   if(pendingPromo) return;
+  if(vsComputer && turn==='b') return; // AI's turn
   const sq  = e.currentTarget;
   const row = +sq.dataset.row;
   const col = +sq.dataset.col;
@@ -760,6 +1052,7 @@ function finishMove(){
   selected = null; validMoves = [];
   checkGameStatus();
   render();
+  scheduleAIMove();
 }
 
 // ── Game status ───────────────────────────────────────────
@@ -844,10 +1137,41 @@ function setBoardSize(){
 
 // ── Event listeners ────────────────────────────────────────
 document.getElementById('btn-restart').addEventListener('click', startGame);
-document.getElementById('btn-undo').addEventListener('click', undoMove);
+document.getElementById('btn-undo').addEventListener('click', ()=>{
+  if(vsComputer && aiThinking) return;
+  // Undo twice when vs CPU so human always gets their turn back
+  undoMove();
+  if(vsComputer && history.length) undoMove();
+});
 document.getElementById('btn-flip').addEventListener('click', ()=>{ flipped=!flipped; render(); });
 document.getElementById('btn-play-again').addEventListener('click', startGame);
 window.addEventListener('resize', ()=>{ setBoardSize(); render(); });
+
+// Mode buttons
+document.getElementById('btn-mode-2p').addEventListener('click', ()=>{
+  vsComputer = false;
+  document.getElementById('btn-mode-2p').classList.add('active');
+  document.getElementById('btn-mode-cpu').classList.remove('active');
+  document.getElementById('diff-selector').classList.remove('show');
+  startGame();
+});
+document.getElementById('btn-mode-cpu').addEventListener('click', ()=>{
+  vsComputer = true;
+  document.getElementById('btn-mode-cpu').classList.add('active');
+  document.getElementById('btn-mode-2p').classList.remove('active');
+  document.getElementById('diff-selector').classList.add('show');
+  startGame();
+});
+
+// Difficulty buttons
+[['diff-easy',1],['diff-normal',2],['diff-hard',3]].forEach(([id, depth])=>{
+  document.getElementById(id).addEventListener('click', ()=>{
+    aiDepth = depth;
+    document.querySelectorAll('.diff-btn').forEach(b=>b.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    startGame();
+  });
+});
 
 // ── Boot ──────────────────────────────────────────────────
 setBoardSize();
